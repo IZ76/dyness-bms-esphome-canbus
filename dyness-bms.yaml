@@ -1,0 +1,201 @@
+# Board: DOIT ESP32 DEVKIT V1 (DOIT)
+# Definition: definitions/boards/esp32doit-devkit-v1/manifest.yaml
+
+esphome:
+  name: dyness-bms
+  friendly_name: Dyness DL5.0C
+
+esp32:
+  variant: esp32
+  flash_size: 4MB
+  framework:
+    type: esp-idf # arduino 
+
+logger:
+  level: WARN      # Вимикаємо зайвий спам у лог, щоб не навантажувати шину
+
+api:
+  encryption:
+    key: "тут має бути код згенерований вашим ESPHome Builder"
+
+ota:
+  - platform: esphome
+    encryption:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: Dyness DL5.0C Fallback Hotspot
+    password: *******
+captive_portal:
+# Налаштування апаратних пінів SPI для вашої ESP32 38pin
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+  miso_pin: GPIO19
+
+canbus:
+  #############################################################
+  # Порт PCS акумулятора Dyness (500KBPS), модуль MCP2515      #
+  #############################################################
+  - platform: mcp2515
+    id: mcp2515_can
+    cs_pin: GPIO17 
+    can_id: 4
+    bit_rate: 500KBPS  
+    clock: 8MHz   # Якщо кварц на 8 МГц
+    on_frame:
+
+      # 1. Параметри заряду/розряду від BMS Dyness
+      - can_id: 0x351  
+        then:
+          - lambda: |-
+              float u_max = ((x[1] << 8) | x[0]) / 10.0;
+              id(dyness_charge_voltage).publish_state(u_max);
+              int i_charge = ((x[3] << 8) | x[2]) / 10;
+              id(dyness_charge_current_limit).publish_state(i_charge);
+              int i_discharge = ((x[5] << 8) | x[4]) / 10;
+              id(dyness_discharge_current_limit).publish_state(i_discharge);
+              float u_min = ((x[7] << 8) | x[6]) / 10.0;
+              id(dyness_discharge_voltage).publish_state(u_min);
+
+      # 2. Рівень заряду та здоров'я (SOC / SOH)
+      - can_id: 0x355  
+        then:
+          - lambda: |-
+              float soc = ((x[1] << 8) | x[0]);
+              id(dyness_soc).publish_state(soc);                                     
+              float soh = ((x[3] << 8) | x[2]);
+              id(dyness_soh).publish_state(soh);                                     
+
+      # 3. Живі дані: Загальна напруга, струм та температура
+      - can_id: 0x356
+        then:
+          - lambda: |-
+              static uint32_t last_time = 0;
+              if (millis() - last_time >= 5000) { // період надсилання даних раз на 5 секунд
+                last_time = millis();
+                float volt = ((x[1] << 8) | x[0]) / 100.0;
+                id(dyness_total_voltage).publish_state(volt);
+                
+                int16_t raw_current = (x[3] << 8) | x[2];
+                float current = raw_current / 10.0;
+                id(dyness_current).publish_state(current);
+                
+                int16_t raw_temp = (x[5] << 8) | x[4];
+                float temp = raw_temp / 10.0;
+                id(dyness_temperature).publish_state(temp);
+              }
+
+      # 4. Бінарні сенсори аварій та підігріву плівки
+      - can_id: 0x359 
+        then:
+          - lambda: |-
+              id(cell_under_temp_charge).publish_state(x[0] & 0x80);
+              id(cell_over_temp_charge).publish_state(x[0] & 0x40);            
+              id(discharge_over_current).publish_state(x[0] & 0x20);                  
+              id(charge_over_current).publish_state(x[0] & 0x10);                     
+              id(module_under_voltage).publish_state(x[0] & 0x8);                     
+              id(module_over_voltage).publish_state(x[0] & 0x4);                      
+              id(cell_under_voltage).publish_state(x[0] & 0x2);                       
+              id(cell_over_voltage).publish_state(x[0] & 0x1);                        
+              id(heating_film_active).publish_state(x[1] & 0x20); // Стан нагрівальної плівки Dyness Heating
+              id(mos_over_temperature).publish_state(x[1] & 0x10);                    
+              id(cell_under_temp_discharge).publish_state(x[1] & 0x2);
+              id(cell_over_temp_discharge).publish_state(x[1] & 0x1);
+
+# Оголошення віртуальних сенсорів для Home Assistant
+sensor:
+  - platform: template
+    name: "Dyness Charge Voltage"
+    id: dyness_charge_voltage
+    unit_of_measurement: "V"
+    accuracy_decimals: 1
+    device_class: voltage
+  - platform: template
+    name: "Dyness Charge Current Limit"
+    id: dyness_charge_current_limit
+    unit_of_measurement: "A"
+    accuracy_decimals: 0
+    device_class: current
+  - platform: template
+    name: "Dyness Discharge Current Limit"
+    id: dyness_discharge_current_limit
+    unit_of_measurement: "A"
+    accuracy_decimals: 0
+    device_class: current
+  - platform: template
+    name: "Dyness Discharge Voltage"
+    id: dyness_discharge_voltage
+    unit_of_measurement: "V"
+    accuracy_decimals: 1
+    device_class: voltage
+  - platform: template
+    name: "Dyness SOC"
+    id: dyness_soc
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    device_class: battery
+  - platform: template
+    name: "Dyness SOH"
+    id: dyness_soh
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+  - platform: template
+    name: "Dyness Total Voltage"
+    id: dyness_total_voltage
+    unit_of_measurement: "V"
+    accuracy_decimals: 2
+    device_class: voltage
+  - platform: template
+    name: "Dyness Current"
+    id: dyness_current
+    unit_of_measurement: "A"
+    accuracy_decimals: 1
+    device_class: current
+  - platform: template
+    name: "Dyness Temperature"
+    id: dyness_temperature
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    device_class: temperature
+
+binary_sensor:
+  - platform: template
+    name: "Dyness Cell Under Temperature Charge"
+    id: cell_under_temp_charge
+  - platform: template
+    name: "Dyness Cell Over Temperature Charge"
+    id: cell_over_temp_charge
+  - platform: template
+    name: "Dyness Discharge Over Current"
+    id: discharge_over_current
+  - platform: template
+    name: "Dyness Charge Over Current"
+    id: charge_over_current
+  - platform: template
+    name: "Dyness Module Under Voltage"
+    id: module_under_voltage
+  - platform: template
+    name: "Dyness Module Over Voltage"
+    id: module_over_voltage
+  - platform: template
+    name: "Dyness Cell Under Voltage"
+    id: cell_under_voltage
+  - platform: template
+    name: "Dyness Cell Over Voltage"
+    id: cell_over_voltage
+  - platform: template
+    name: "Dyness Heating Film Active"
+    id: heating_film_active
+    device_class: heat
+  - platform: template
+    name: "Dyness MOS Over Temperature"
+    id: mos_over_temperature
+  - platform: template
+    name: "Dyness Cell Under Temperature Discharge"
+    id: cell_under_temp_discharge
+  - platform: template
+    name: "Dyness Cell Over Temperature Discharge"
+    id: cell_over_temp_discharge
